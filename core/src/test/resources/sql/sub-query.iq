@@ -3722,3 +3722,113 @@ SELECT map(SELECT empno, deptno from emp where false);
 !ok
 
 # End sub-query.iq
+
+# [CALCITE-7719] Field access on an element of a ROW array built by a
+# sub-query raises IllegalArgumentException.
+select t.a[1]."EXPR$0"."EXPR$1" as v
+from (select array(select ROW(ROW(1, 2), 3) from (values (0))) as a) as t;
++---+
+| V |
++---+
+| 2 |
++---+
+(1 row)
+
+!ok
+
+!set trimfields false
+
+# [CALCITE-7793] RelMdDistinctRowCount passes an Aggregate predicate to the
+# Aggregate's input without translating column references.
+# PostgreSQL 14.13 returns the same empty result for this query.
+with t(n, r) as (
+  values (1, cast(row(10) as row(d integer))),
+         (2, cast(row(20) as row(d integer)))
+)
+select e.n
+from t e
+where e.n > (
+  select avg(e2.n)
+  from t e2
+  where (e2.r).d = (e.r).d
+  and exists (
+     select 1
+     from (values (1, cast(row(10) as row(d integer)))) as b(k, br)
+     where b.k = e2.n
+     and (b.br).d = (e.r).d
+  )
+);
++---+
+| N |
++---+
++---+
+(0 rows)
+
+!ok
+!set trimfields true
+
+# [CALCITE-7821] Correlated query crashes SqlToRelConverter
+# The results of the following four queries were validated using Postgres.
+!set expand true
+with
+t(k, a) as (select * from (values (1, 10), (2, cast(null as int)), (3, 30), (4, 40), (5, cast(null as int)))),
+s(k, b) as (select * from (values (1, 10), (3, cast(null as int)), (4, 41), (5, 50)))
+select * from t where t.a not in (select s.b from s where s.k = t.k);
++---+----+
+| K | A  |
++---+----+
+| 2 |    |
+| 4 | 40 |
++---+----+
+(2 rows)
+
+!ok
+
+with
+t(k, a) as (select * from (values (1, 10), (2, cast(null as int)), (3, 30), (4, 40), (5, cast(null as int)))),
+s(k, b) as (select * from (values (1, 10), (3, cast(null as int)), (4, 41), (5, 50)))
+select k, a in (select s.b from s where s.k = t.k) as i from t;
++---+-------+
+| K | I     |
++---+-------+
+| 1 | true  |
+| 2 | false |
+| 3 |       |
+| 4 | false |
+| 5 |       |
++---+-------+
+(5 rows)
+
+!ok
+
+with
+t(k, a) as (select * from (values (1, 10), (2, cast(null as int)), (3, 30), (4, 40), (5, cast(null as int)))),
+s(k, b) as (select * from (values (1, 10), (3, cast(null as int)), (4, 41), (5, 50)))
+select k, a not in (select s.b from s where s.k = t.k) as ni from t;
++---+-------+
+| K | NI    |
++---+-------+
+| 1 | false |
+| 2 | true  |
+| 3 |       |
+| 4 | true  |
+| 5 |       |
++---+-------+
+(5 rows)
+
+!ok
+
+with
+t(a, k) as (select * from (values (10, 1), (cast(null as int), 2), (30, 3), (40, 4), (cast(null as int), 5))),
+s(k, b) as (select * from (values (1, 10), (3, cast(null as int)), (4, 41), (5, 50)))
+select k from t group by k having max(a) not in (select s.b from s where s.k = t.k);
++---+
+| K |
++---+
+| 2 |
+| 4 |
++---+
+(2 rows)
+
+!ok
+!set expand false
