@@ -3288,6 +3288,55 @@ class RelOptRulesTest extends RelOptTestBase {
         .check();
   }
 
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-5289">
+   * [CALCITE-5289] Assertion failure in MultiJoinOptimizeBushyRule</a>. */
+  @Test void testBushyJoinRule() {
+    final String sql = "select emp.ename from emp LEFT JOIN emp AS emp1 on emp.ename = emp1.ename";
+    sql(sql).withPreRule(CoreRules.JOIN_TO_MULTI_JOIN)
+        .withRule(CoreRules.MULTI_JOIN_OPTIMIZE_BUSHY)
+        .checkUnchanged();
+  }
+
+  /** Test case for the TODO in {@link MultiJoinOptimizeBushyRule}:
+   * "Join conditions that touch 3 factors."
+   *
+   * <p>The CASE condition references three factors (e1, d, e2) and therefore
+   * cannot be represented as a binary join edge. The rule should handle it
+   * gracefully rather than throwing an {@code AssertionError}. */
+  @Test void testMultiJoinOptimizeBushyThreeFactorCondition() {
+    HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(CoreRules.FILTER_INTO_JOIN)
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.JOIN_TO_MULTI_JOIN)
+        .build();
+    HepProgram program = new HepProgramBuilder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.MULTI_JOIN_OPTIMIZE_BUSHY)
+        .build();
+    final String sql = "select e1.ename from emp e1, dept d, emp e2\n"
+        + "where e1.deptno = d.deptno and e2.deptno = d.deptno\n"
+        + "and d.deptno = case when e1.sal > 1000 then e2.empno else e1.empno end";
+    sql(sql).withPre(preProgram).withProgram(program).check();
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7833">[CALCITE-7833]
+   * MULTI_JOIN_OPTIMIZE_BUSHY may turn an outer join into an inner join</a>. */
+  @Test void testBushyJoinRuleSkipsFullOuterJoin() {
+    sql("select * from emp full join dept on emp.deptno = dept.deptno")
+        .withPreRule(CoreRules.JOIN_TO_MULTI_JOIN)
+        .withRule(CoreRules.MULTI_JOIN_OPTIMIZE_BUSHY)
+        .checkUnchanged();
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7833">[CALCITE-7833]
+   * MULTI_JOIN_OPTIMIZE_BUSHY may turn an outer join into an inner join</a>. */
+  @Test void testBushyJoinRuleSkipsLeftJoinOnTrue() {
+    sql("select * from emp left join dept on true")
+        .withPreRule(CoreRules.JOIN_TO_MULTI_JOIN)
+        .withRule(CoreRules.MULTI_JOIN_OPTIMIZE_BUSHY)
+        .checkUnchanged();
+  }
+
   @Test void testConvertMultiJoinRule() {
     final String sql = "select e1.ename from emp e1, dept d, emp e2\n"
         + "where e1.deptno = d.deptno and d.deptno = e2.deptno";
