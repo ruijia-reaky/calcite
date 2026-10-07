@@ -128,6 +128,84 @@ class BabelParserTest extends SqlParserTest {
             + "FROM \"t\"");
   }
 
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7310">
+   * [CALCITE-7310] Support the syntax SELECT * EXCLUDE(columns)</a>. */
+  @Test void testStarExclude() {
+    final String sql = "select * exclude(empno) from emp";
+    final String expected = "SELECT * EXCLUDE (`EMPNO`)\n"
+        + "FROM `EMP`";
+    sql(sql).ok(expected);
+
+    final String sql2 = "select e.* exclude(e.empno, e.ename, e.job, e.mgr, d.deptno)"
+        + " from emp e join dept d on e.deptno = d.deptno";
+    final String expected2 = "SELECT `E`.* EXCLUDE (`E`.`EMPNO`, `E`.`ENAME`,"
+        + " `E`.`JOB`, `E`.`MGR`, `D`.`DEPTNO`)\n"
+        + "FROM `EMP` AS `E`\n"
+        + "INNER JOIN `DEPT` AS `D` ON (`E`.`DEPTNO` = `D`.`DEPTNO`)";
+    sql(sql2).ok(expected2);
+
+    final String sql3 = "select e.* exclude(e.empno, e.ename, e.job, e.mgr, d.deptno),"
+        + " d.* exclude(d.dname) from emp e join dept d on e.deptno = d.deptno";
+    final String expected3 = "SELECT `E`.* EXCLUDE (`E`.`EMPNO`, `E`.`ENAME`,"
+        + " `E`.`JOB`, `E`.`MGR`, `D`.`DEPTNO`), `D`.* EXCLUDE (`D`.`DNAME`)\n"
+        + "FROM `EMP` AS `E`\n"
+        + "INNER JOIN `DEPT` AS `D` ON (`E`.`DEPTNO` = `D`.`DEPTNO`)";
+    sql(sql3).ok(expected3);
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7532">
+   * [CALCITE-7532] Support the syntax SELECT * REPLACE(expr as column)</a>.
+   * */
+  @Test void testStarReplace() {
+    final String sql = "select * replace(empno + 1 as empno) from emp";
+    final String expected = "SELECT * REPLACE ((`EMPNO` + 1) AS `EMPNO`)\n"
+        + "FROM `EMP`";
+    sql(sql).ok(expected);
+
+    final String sql2 = "select e.* replace(e.empno + 1 as e.empno, e.sal * 2 as e.sal)"
+        + " from emp e join dept d on e.deptno = d.deptno";
+    final String expected2 = "SELECT `E`.* REPLACE ((`E`.`EMPNO` + 1) AS `E`.`EMPNO`,"
+        + " (`E`.`SAL` * 2) AS `E`.`SAL`)\n"
+        + "FROM `EMP` AS `E`\n"
+        + "INNER JOIN `DEPT` AS `D` ON (`E`.`DEPTNO` = `D`.`DEPTNO`)";
+    sql(sql2).ok(expected2);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-5696">[CALCITE-5696]
+   * Support trailing comma in SELECT list for Babel parser (like BigQuery)</a>.
+   *
+   * <p>GoogleSQL (BigQuery) allows a trailing comma at the end of the SELECT
+   * list, e.g. {@code SELECT a, b, FROM t}; the trailing comma is accepted and
+   * dropped. */
+  @Test void testTrailingCommaInSelectList() {
+    sql("select some_col, from my_table")
+        .ok("SELECT `SOME_COL`\nFROM `MY_TABLE`");
+    sql("select a, b, from t")
+        .ok("SELECT `A`, `B`\nFROM `T`");
+    sql("select 1 as x, from t")
+        .ok("SELECT 1 AS `X`\nFROM `T`");
+
+    // Trailing comma at the end of a FROM-less query
+    sql("select 1,").ok("SELECT 1");
+
+    // Trailing comma inside a subquery
+    sql("select * from (select a, from t)")
+        .ok("SELECT *\nFROM (SELECT `A`\nFROM `T`)");
+
+    // Trailing comma before a set operation
+    sql("select a, from t union select b, from u")
+        .ok("SELECT `A`\nFROM `T`\nUNION\nSELECT `B`\nFROM `U`");
+
+    // Only a single trailing comma is allowed
+    sql("select a, b, ^,^ from t")
+        .fails("(?s)Encountered \",\" at .*");
+
+    // A comma without a preceding item is not allowed
+    sql("select ^,^ from t")
+        .fails("(?s)Encountered \", from\" at .*");
+  }
+
   /** Tests that there are no reserved keywords. */
   @Disabled
   @Test void testKeywords() {
@@ -322,6 +400,45 @@ class BabelParserTest extends SqlParserTest {
     final String expected = "CREATE VOLATILE TABLE `FOO` "
         + "(`BAR` INTEGER NOT NULL, `BAZ` VARCHAR(30))";
     sql(sql).ok(expected);
+  }
+
+  @Test void testCreateVariantTable() {
+    final String sql = "create table foo (bar variant not null)";
+    final String expected = "CREATE TABLE `FOO` "
+        + "(`BAR` VARIANT NOT NULL)";
+    sql(sql).ok(expected);
+  }
+
+  @Test void testCreateTableWithTrailingComma() {
+    final String sql = "create table foo (bar integer not null, baz varchar(30),)";
+    final String expected = "CREATE TABLE `FOO` (`BAR` INTEGER NOT NULL, `BAZ` VARCHAR(30))";
+    sql(sql).ok(expected);
+
+    final String sql2 = "create table foo (bar integer not null,)";
+    final String expected2 = "CREATE TABLE `FOO` (`BAR` INTEGER NOT NULL)";
+    sql(sql2).ok(expected2);
+
+    // With a table collection type
+    final String sql3 = "create set table foo (bar int not null,)";
+    final String expected3 = "CREATE SET TABLE `FOO` (`BAR` INTEGER NOT NULL)";
+    sql(sql3).ok(expected3);
+
+    // With a query
+    final String sql4 = "create table foo (bar integer,) as select 1";
+    final String expected4 = "CREATE TABLE `FOO` (`BAR` INTEGER) AS\nSELECT 1";
+    sql(sql4).ok(expected4);
+
+    // Only a single trailing comma is allowed
+    sql("create table foo (bar integer,^,^)")
+        .fails("(?s)Encountered \",.*\" at .*");
+
+    // A comma without a preceding column is not allowed
+    sql("create table foo ^(^, bar integer)")
+        .fails("(?s)Encountered \"\\(.*\" at .*");
+
+    // An empty column list is not allowed
+    sql("create table foo ^(^)")
+        .fails("(?s)Encountered \"\\(.*\" at .*");
   }
 
   @Test void testArrayLiteralFromString() {
