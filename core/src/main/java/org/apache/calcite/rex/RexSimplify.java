@@ -495,6 +495,162 @@ public class RexSimplify {
     return simplifyGenericNode(e);
   }
 
+  // string 'AA%%__%%AA' simplify to 'AA__%AA'
+  // string with even escapes 'AA\\\\%%__%%AA' simplify to 'AA\\__%AA'
+  // string with odd escapes 'AA\\\\\\%%__%%AA' simplify to 'AA\\\\\\%__%AA'
+  private String simplifyMixedWildcards(String str, char escape) {
+    Pattern pattern = getWildCardPattern(escape);
+    Matcher matcher = pattern.matcher(str);
+    StringBuilder builder = new StringBuilder();
+    int from = 0;
+    while (matcher.find()) {
+      int start = matcher.start();
+      String group = requireNonNull(matcher.group(0));
+      if (start > 0
+          && str.charAt(start - 1) == escape
+          && consecutiveSameCharCountBefore(str, start - 1, escape) % 2 == 1) {
+        builder.append(str.substring(from, start + 1));
+        builder.append(simplifyPercentAndUnderline(group.substring(1)));
+      } else {
+        builder.append(str.substring(from, start));
+        builder.append(simplifyPercentAndUnderline(group));
+      }
+      from = matcher.end();
+    }
+    if (from < str.length()) {
+      builder.append(str.substring(from));
+    }
+    return builder.toString();
+  }
+
+  private static Pattern getWildCardPattern(char escape) {
+    switch (escape) {
+    case '%':
+      return Pattern.compile("_+");
+    case '_':
+      return Pattern.compile("%+");
+    default:
+      return Pattern.compile("[_%]+");
+    }
+  }
+
+  // Tool method: count the number of consecutive identical characters before index
+  private int consecutiveSameCharCountBefore(String str, int index, char escape) {
+    int count = 0;
+    while (index >= 0) {
+      if (str.charAt(index) != escape) {
+        break;
+      }
+      count++;
+      index--;
+    }
+    return count;
+  }
+
+  // Tool method: simplified string mixed with '%' and '_'
+  private String simplifyPercentAndUnderline(String str) {
+    StringBuilder builder = new StringBuilder();
+    boolean containsPercent = false;
+    for (int index = 0; index < str.length(); index++) {
+      if (str.charAt(index) == '%') {
+        containsPercent = true;
+        continue;
+      }
+      if (str.charAt(index) == '_') {
+        builder.append('_');
+      }
+    }
+    if (containsPercent) {
+      builder.append('%');
+    }
+    return builder.toString();
+  }
+
+  /**
+   * Simplifies like string with escape.
+   * A like '%%#%%A%%' escape '#' should simplify to A like '%#%%A%' escape '#'.
+   */
+  private String simplifyLikeString(String content, char escape, char wildcard) {
+    int escapeCount = 0;
+    int wildcardCount = 0;
+    StringBuilder builder = new StringBuilder();
+    for (int index = 0; index < content.length(); index++) {
+      char c = content.charAt(index);
+      if (c == escape) {
+        builder.append(c);
+        escapeCount++;
+        wildcardCount = 0;
+        continue;
+      }
+      if (c == wildcard) {
+        if (escapeCount % 2 == 1) {
+          builder.append(wildcard);
+        } else if (wildcardCount == 0) {
+          builder.append(wildcard);
+          wildcardCount++;
+        }
+        escapeCount = 0;
+        continue;
+      }
+      builder.append(c);
+      escapeCount = 0;
+      wildcardCount = 0;
+    }
+    return simplifyMixedWildcards(builder.toString(), escape);
+  }
+
+  /** Returns whether two nodes are the same comparison, considering the
+   * symmetry of comparison operators: "{@code a = b}" is equivalent to
+   * "{@code b = a}", and "{@code a < b}" is equivalent to
+   * "{@code b > a}".
+   *
+   * <p>This allows digest-based rewrites such as the absorption law
+   * ("{@code a AND (a OR b) => a}") to recognize comparison terms that
+   * differ only in the order of their operands.
+   * See <a href="https://issues.apache.org/jira/browse/CALCITE-739">[CALCITE-739]
+   * Extend RexUtil.pullFactors to recognize additional common factors</a>.
+   */
+  private static boolean equivalentComparison(RexNode a, RexNode b) {
+    if (a.equals(b)) {
+      return true;
+    }
+    if (!(a instanceof RexCall) || !(b instanceof RexCall)) {
+      return false;
+    }
+    final RexCall callA = (RexCall) a;
+    final RexCall callB = (RexCall) b;
+    final SqlKind kindA = callA.getKind();
+    // Comparison operators are the only operators whose semantics is
+    // preserved when operands are reversed and the operator is reversed
+    // (for example, "a < b" becomes "b > a").
+    if (!SqlKind.COMPARISON.contains(kindA)
+        || kindA.reverse() != callB.getKind()
+        || callA.getOperands().size() != 2
+        || callB.getOperands().size() != 2) {
+      return false;
+    }
+    return callA.getOperands().get(0).equals(callB.getOperands().get(1))
+        && callA.getOperands().get(1).equals(callB.getOperands().get(0));
+  }
+
+  /** Returns whether {@code nodes} contains a node that is the same
+   * comparison as {@code target}; see {@link #equivalentComparison}. */
+  private static boolean containsEquivalentComparison(List<RexNode> nodes,
+      RexNode target) {
+    for (RexNode node : nodes) {
+      if (equivalentComparison(node, target)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether both operands of a comparison have type BOOLEAN. */
+  private static boolean isBooleanComparison(RexNode left, RexNode right) {
+    return left.getType().getSqlTypeName() == SqlTypeName.BOOLEAN
+        && right.getType().getSqlTypeName() == SqlTypeName.BOOLEAN;
+  }
+
   // e must be a comparison (=, >, >=, <, <=, !=)
   private RexNode simplifyComparison(RexCall e, RexUnknownAs unknownAs) {
     //noinspection unchecked
@@ -537,8 +693,10 @@ public class RexSimplify {
       }
     }
 
-    if (o0.getType().getSqlTypeName() == SqlTypeName.BOOLEAN) {
-      Comparison cmp = Comparison.of(rexBuilder.makeCall(e.getOperator(), o0, o1), node -> true);
+    if (isBooleanComparison(o0, o1)) {
+      Comparison cmp =
+          Comparison.of(
+              rexBuilder.makeCall(e.getParserPosition(), e.getOperator(), o0, o1), node -> true);
       if (cmp != null) {
         if (cmp.literal.isAlwaysTrue()) {
           switch (cmp.kind) {
@@ -1640,6 +1798,9 @@ public class RexSimplify {
       // Simplify BOOLEAN expressions if possible
       while (term.getKind() == SqlKind.EQUALS) {
         RexCall call = (RexCall) term;
+        if (!isBooleanComparison(call.getOperands().get(0), call.getOperands().get(1))) {
+          break;
+        }
         if (call.getOperands().get(0).isAlwaysTrue()) {
           term = call.getOperands().get(1);
           terms.set(i, term);
