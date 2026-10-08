@@ -54,6 +54,7 @@ import org.apache.calcite.rel.core.TableModify;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.core.Values;
+import org.apache.calcite.rel.core.Window;
 import org.apache.calcite.rel.hint.RelHint;
 import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalExchange;
@@ -83,6 +84,7 @@ import org.apache.calcite.rel.metadata.UnboundMetadata;
 import org.apache.calcite.rel.rules.CoreRules;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexCorrelVariable;
@@ -2700,6 +2702,56 @@ public class RelMetadataTest {
     assertThat(r, hasSize(1));
     final String resultString = r.iterator().next().toString();
     assertThat(resultString, is("+([CATALOG, SALES, EMP].#0.$5, 1)"));
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7843">[CALCITE-7843]
+   * RelMdExpressionLineage should support Window</a>. */
+  @Test void testExpressionLineageWindow() {
+    final RelNode rel =
+        sql("select empno, row_number() over (order by sal) from emp").toRel();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(CoreRules.PROJECT_TO_LOGICAL_PROJECT_AND_WINDOW)
+        .build();
+    final HepPlanner planner = new HepPlanner(program);
+    planner.setRoot(rel);
+    final RelNode window = planner.findBestExp().getInput(0);
+    assertThat(window, instanceOf(Window.class));
+    final RelMetadataQuery mq = window.getCluster().getMetadataQuery();
+    final List<RelDataTypeField> fields = window.getRowType().getFieldList();
+
+    // empno is column 0 of the Window input
+    final Set<RexNode> r1 =
+        mq.getExpressionLineage(window, RexInputRef.of(0, fields));
+    assertThat(r1, hasSize(1));
+    final String resultString = r1.iterator().next().toString();
+    assertThat(resultString, is("[CATALOG, SALES, EMP].#0.$0"));
+
+    // row_number() is the last column, computed by the Window
+    final Set<RexNode> r2 =
+        mq.getExpressionLineage(window, RexInputRef.of(fields.size() - 1, fields));
+    assertNull(r2);
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7070">[CALCITE-7070]
+   * FILTER_REDUCE_EXPRESSIONS crashes on expression BETWEEN ( NULL) AND X</a>. */
+  @Test void testJoinCrash() {
+    String sql = "SELECT DISTINCT * FROM emp AS cor0 JOIN dept cor1 ON "
+        + "NULL < - - ( + + CAST ( + 47 AS INTEGER ) ) - - - 47";
+    SqlTestFactory factory = SqlTestFactory.INSTANCE
+        .withValidatorConfig(c -> c.withCallRewrite(false))
+        .withSqlToRelConfig(
+            c -> c.withRelBuilderConfigTransform(t -> t.withSimplify(false)));
+    SqlValidatorTester.DEFAULT.convertSqlToRel(factory, sql, false, false);
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7598">[CALCITE-7598]
+   * Query with HAVING empno BETWEEN NULL AND NULL crashes the compiler</a>. */
+  @Test void testHavingCrash() {
+    String sql = "SELECT DISTINCT empno FROM emp GROUP BY empno HAVING empno BETWEEN NULL AND NULL";
+    SqlTestFactory factory = SqlTestFactory.INSTANCE
+        .withSqlToRelConfig(
+            c -> c.withRelBuilderConfigTransform(t -> t.withSimplify(false)));
+    SqlValidatorTester.DEFAULT.convertSqlToRel(factory, sql, false, false);
   }
 
   @Test void testAllPredicates() {
