@@ -110,7 +110,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -121,6 +120,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BinaryOperator;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -5114,8 +5114,8 @@ public class SqlFunctions {
     final List smaller = list1;
     final List bigger = list2;
     boolean hasNull = false;
-    if (smaller.size() > 0 && bigger.size() > 0) {
-      final Set smallestSet = new HashSet(smaller);
+    if (!smaller.isEmpty() && !bigger.isEmpty()) {
+      final Set<@Nullable Object> smallestSet = toDeepEqualityHashSet(smaller);
       hasNull = smallestSet.remove(null);
       for (Object element : bigger) {
         if (element == null) {
@@ -5192,8 +5192,7 @@ public class SqlFunctions {
    * <p>Note: If the list does not contain null,
    * {@link Util#distinctList(List)} is probably faster. */
   public static List distinct(List list) {
-    Set result = new LinkedHashSet<>(list);
-    return new ArrayList<>(result);
+    return unwrapDeepEqualitySet(toDeepEqualityLinkedHashSet(list));
   }
 
   /** Support the ARRAY_MAX function. */
@@ -5266,9 +5265,11 @@ public class SqlFunctions {
 
   /** Support the ARRAY_EXCEPT function. */
   public static List arrayExcept(List list1, List list2) {
-    final Set result = new LinkedHashSet<>(list1);
-    result.removeAll(list2);
-    return new ArrayList<>(result);
+    final Set<@Nullable Object> result = toDeepEqualityLinkedHashSet(list1);
+    for (Object element : list2) {
+      result.remove(wrapForDeepEquality(element));
+    }
+    return unwrapDeepEqualitySet(result);
   }
 
   /** Support the ARRAY_INSERT function. */
@@ -5361,17 +5362,140 @@ public class SqlFunctions {
 
   /** Support the ARRAY_INTERSECT function. */
   public static List arrayIntersect(List list1, List list2) {
-    final Set result = new LinkedHashSet<>(list1);
-    result.retainAll(list2);
-    return new ArrayList<>(result);
+    final Set<@Nullable Object> remaining = toDeepEqualityHashSet(list2);
+    final List<@Nullable Object> result = new ArrayList<>();
+    for (Object element : list1) {
+      if (remaining.remove(wrapForDeepEquality(element))) {
+        result.add(element);
+      }
+    }
+    return result;
   }
 
   /** Support the ARRAY_UNION function. */
   public static List arrayUnion(List list1, List list2) {
-    final Set result = new LinkedHashSet<>();
-    result.addAll(list1);
-    result.addAll(list2);
-    return new ArrayList<>(result);
+    final Set<@Nullable Object> result = toDeepEqualityLinkedHashSet(list1);
+    for (Object element : list2) {
+      result.add(wrapForDeepEquality(element));
+    }
+    return unwrapDeepEqualitySet(result);
+  }
+
+  /** Creates a set using deep equality, preserving element encounter order. */
+  private static Set<@Nullable Object> toDeepEqualityLinkedHashSet(List<?> list) {
+    return toDeepEqualitySet(list, LinkedHashSet::new);
+  }
+
+  /** Creates a hash set using deep equality. */
+  private static Set<@Nullable Object> toDeepEqualityHashSet(List<?> list) {
+    return toDeepEqualitySet(list, HashSet::new);
+  }
+
+  /** Creates a set using deep equality and the supplied factory. */
+  private static Set<@Nullable Object> toDeepEqualitySet(List<?> list,
+      Supplier<? extends Set<@Nullable Object>> setSupplier) {
+    final Set<@Nullable Object> set = setSupplier.get();
+    for (Object value : list) {
+      set.add(wrapForDeepEquality(value));
+    }
+    return set;
+  }
+
+  /** Counts element occurrences using deep equality. */
+  private static Map<@Nullable Object, Integer> toDeepEqualityCounts(List<?> list) {
+    final Map<@Nullable Object, Integer> counts = new HashMap<>();
+    for (Object value : list) {
+      counts.merge(wrapForDeepEquality(value), 1, Integer::sum);
+    }
+    return counts;
+  }
+
+  /** Wraps composite values, which may contain ROW values, but leaves scalar
+   * values and null unchanged. */
+  private static @Nullable Object wrapForDeepEquality(@Nullable Object value) {
+    if (value == null) {
+      return null;
+    } else if (value instanceof List || value instanceof Map || value.getClass().isArray()) {
+      return new DeepEqualityWrapper(value);
+    }
+    return value;
+  }
+
+  /** Creates a list of the set's elements in iteration order, replacing
+   * deep-equality wrappers with their original values. */
+  private static List<@Nullable Object> unwrapDeepEqualitySet(Set<@Nullable Object> set) {
+    final List<@Nullable Object> values = new ArrayList<>(set.size());
+    for (Object element : set) {
+      values.add(element instanceof DeepEqualityWrapper
+          ? ((DeepEqualityWrapper) element).value : element);
+    }
+    return values;
+  }
+
+  /** A wrapper providing deep equality and hashing for composite values.
+   * Assumes values are immutable. */
+  private static final class DeepEqualityWrapper {
+    private final Object value;
+    // Benign races may compute the same hash more than once.
+    private int hashCode;
+
+    private DeepEqualityWrapper(Object value) {
+      this.value = value;
+    }
+
+    @Override public boolean equals(@Nullable Object obj) {
+      return this == obj
+          || obj instanceof DeepEqualityWrapper
+          && Functions.deepEquals(value, ((DeepEqualityWrapper) obj).value);
+    }
+
+    @Override public int hashCode() {
+      int hash = hashCode;
+      if (hash == 0) {
+        hash = Functions.deepHashCode(value);
+        // Zero means not yet computed; cache a computed zero as 1 to avoid
+        // recomputing it on every call.
+        if (hash == 0) {
+          hash = 1;
+        }
+        hashCode = hash;
+      }
+      return hash;
+    }
+  }
+
+  /** Transforms a list, applying a function to each element. */
+  public static <F, T> List<T> transform(List<? extends F> list,
+      Function1<? super F, ? extends T> function) {
+    return new TransformingList<>(list, function);
+  }
+
+  /** List that returns the same number of elements as a backing list,
+   * applying a transformation function to each one.
+   *
+   * @param <F> Element type of backing list
+   * @param <T> Element type of this list
+   */
+  private static class TransformingList<F, T> extends AbstractList<T> {
+    private final Function1<? super F, ? extends T> function;
+    private final List<? extends F> list;
+
+    TransformingList(List<? extends F> list, Function1<? super F, ? extends T> function) {
+      this.function = function;
+      this.list = list;
+    }
+
+    @Override public T get(int i) {
+      return function.apply(list.get(i));
+    }
+
+    @Override public int size() {
+      return list.size();
+    }
+
+    @Override public Iterator<T> iterator() {
+      return listIterator();
+    }
   }
 
   /** Support the SORT_ARRAY function. */
@@ -5484,61 +5608,66 @@ public class SqlFunctions {
   }
 
   /** Support the MEMBER OF function. */
-  public static boolean memberOf(@Nullable Object object, Collection collection) {
-    return collection.contains(object);
+  public static boolean memberOf(@Nullable Object object, List<?> list) {
+    for (Object value : list) {
+      if (Functions.deepEquals(value, object)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Support the MULTISET INTERSECT DISTINCT function. */
-  public static <E> Collection<E> multisetIntersectDistinct(Collection<E> c1,
-      Collection<E> c2) {
-    final Set<E> result = new HashSet<>(c1);
-    result.retainAll(c2);
-    return new ArrayList<>(result);
+  public static List multisetIntersectDistinct(List c1, List c2) {
+    return arrayIntersect(c1, c2);
   }
 
   /** Support the MULTISET INTERSECT ALL function. */
-  public static <E> Collection<E> multisetIntersectAll(Collection<E> c1,
-      Collection<E> c2) {
-    final List<E> result = new ArrayList<>(c1.size());
-    final List<E> c2Copy = new ArrayList<>(c2);
-    for (E e : c1) {
-      if (c2Copy.remove(e)) {
+  public static List multisetIntersectAll(List c1, List c2) {
+    final Map<@Nullable Object, Integer> counts = toDeepEqualityCounts(c2);
+    final List result = new ArrayList();
+    for (Object e : c1) {
+      counts.computeIfPresent(wrapForDeepEquality(e), (key, count) -> {
         result.add(e);
-      }
+        return count == 1 ? null : count - 1;
+      });
     }
+
     return result;
   }
 
   /** Support the MULTISET EXCEPT ALL function. */
-  @SuppressWarnings("JdkObsolete")
-  public static <E> Collection<E> multisetExceptAll(Collection<E> c1,
-      Collection<E> c2) {
-    // TOOD: use Multisets?
-    final List<E> result = new LinkedList<>(c1);
-    for (E e : c2) {
-      result.remove(e);
+  public static List multisetExceptAll(List c1, List c2) {
+    final Map<@Nullable Object, Integer> counts = toDeepEqualityCounts(c2);
+    final List result = new ArrayList();
+    for (Object e : c1) {
+      counts.compute(wrapForDeepEquality(e), (key, count) -> {
+        if (count == null) {
+          result.add(e);
+          return null;
+        }
+        return count == 1 ? null : count - 1;
+      });
     }
     return result;
   }
 
   /** Support the MULTISET EXCEPT DISTINCT function. */
-  public static <E> Collection<E> multisetExceptDistinct(Collection<E> c1,
-      Collection<E> c2) {
-    final Set<E> result = new HashSet<>(c1);
-    result.removeAll(c2);
-    return new ArrayList<>(result);
+  public static List multisetExceptDistinct(List c1, List c2) {
+    final Set<@Nullable Object> result = toDeepEqualityHashSet(c1);
+    for (Object e : c2) {
+      result.remove(wrapForDeepEquality(e));
+    }
+    return unwrapDeepEqualitySet(result);
   }
 
   /** Support the IS A SET function. */
-  public static boolean isASet(Collection collection) {
-    if (collection instanceof Set) {
-      return true;
-    }
+  public static boolean isASet(List<?> list) {
     // capacity calculation is in the same way like for new HashSet(Collection)
     // however return immediately in case of duplicates
-    Set set = new HashSet(Math.max((int) (collection.size() / .75f) + 1, 16));
-    for (Object e : collection) {
-      if (!set.add(e)) {
+    final Set<@Nullable Object> set = new HashSet<>(Math.max((int) (list.size() / .75f) + 1, 16));
+    for (Object e : list) {
+      if (!set.add(wrapForDeepEquality(e))) {
         return false;
       }
     }
@@ -5546,16 +5675,15 @@ public class SqlFunctions {
   }
 
   /** Support the SUBMULTISET OF function. */
-  @SuppressWarnings("JdkObsolete")
-  public static boolean submultisetOf(Collection possibleSubMultiset,
-      Collection multiset) {
+  public static boolean submultisetOf(List<?> possibleSubMultiset, List<?> multiset) {
     if (possibleSubMultiset.size() > multiset.size()) {
       return false;
     }
-    // TODO: use Multisets?
-    Collection multisetLocal = new LinkedList(multiset);
+    final Map<@Nullable Object, Integer> counts = toDeepEqualityCounts(multiset);
     for (Object e : possibleSubMultiset) {
-      if (!multisetLocal.remove(e)) {
+      final Integer remaining =
+          counts.computeIfPresent(wrapForDeepEquality(e), (key, count) -> count - 1);
+      if (remaining == null || remaining < 0) {
         return false;
       }
     }
@@ -5563,23 +5691,20 @@ public class SqlFunctions {
   }
 
   /** Support the MULTISET UNION function. */
-  public static Collection multisetUnionDistinct(Collection collection1,
-      Collection collection2) {
-    // capacity calculation is in the same way like for new HashSet(Collection)
-    Set resultCollection =
-        new HashSet(Math.max((int) ((collection1.size() + collection2.size()) / .75f) + 1, 16));
-    resultCollection.addAll(collection1);
-    resultCollection.addAll(collection2);
-    return new ArrayList(resultCollection);
+  public static List multisetUnionDistinct(List list1, List list2) {
+    final Set<@Nullable Object> result = toDeepEqualityHashSet(list1);
+    for (Object element : list2) {
+      result.add(wrapForDeepEquality(element));
+    }
+    return unwrapDeepEqualitySet(result);
   }
 
   /** Support the MULTISET UNION ALL function. */
-  public static Collection multisetUnionAll(Collection collection1,
-      Collection collection2) {
-    List resultCollection = new ArrayList(collection1.size() + collection2.size());
-    resultCollection.addAll(collection1);
-    resultCollection.addAll(collection2);
-    return resultCollection;
+  public static List multisetUnionAll(List list1, List list2) {
+    final List result = new ArrayList(list1.size() + list2.size());
+    result.addAll(list1);
+    result.addAll(list2);
+    return result;
   }
 
   /** Support the ARRAY_REVERSE function. */
