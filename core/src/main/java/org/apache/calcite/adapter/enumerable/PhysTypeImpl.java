@@ -574,7 +574,58 @@ public class PhysTypeImpl implements PhysType {
   }
 
   @Override public @Nullable Expression comparer() {
-    return format.comparer();
+    final Expression comparer = format.comparer();
+    if (comparer != null) {
+      // ARRAY compares nested arrays by content, but a List or Map compares
+      // the Object[] values it contains by reference.
+      if (format == JavaRowFormat.ARRAY && containsStructInCollection(rowType)) {
+        return Expressions.call(BuiltInMethod.DEEP_COMPARER.method);
+      }
+      return comparer;
+    }
+    if (anyFieldContainsStruct(rowType)) {
+      // A row or key containing struct (ROW) values needs deep equality;
+      // the default equality of the runtime representations of struct values (Object[], List)
+      // compares nested Object[] values by reference. Here we implement the "not
+      // distinct" semantics used by GROUP BY, DISTINCT and set operations.
+      return Expressions.call(BuiltInMethod.DEEP_COMPARER.method);
+    }
+    return null;
+  }
+
+  /** Returns whether a struct occurs inside a collection or map, including
+   * collections and maps nested in struct fields. Plain nested structs do not
+   * require overriding the ARRAY format's comparer. */
+  private static boolean containsStructInCollection(RelDataType type) {
+    if (type.isStruct()) {
+      return type.getFieldList().stream()
+          .anyMatch(f -> containsStructInCollection(f.getType()));
+    }
+    return containsStruct(type);
+  }
+
+  /** Returns whether any field of {@code rowType} contains a struct value:
+   * the field is itself a struct, or a collection or map whose elements
+   * contain one. */
+  private static boolean anyFieldContainsStruct(RelDataType rowType) {
+    return rowType.getFieldList().stream()
+        .anyMatch(f -> containsStruct(f.getType()));
+  }
+
+  private static boolean containsStruct(RelDataType type) {
+    if (type.isStruct()) {
+      return true;
+    }
+    final RelDataType componentType = type.getComponentType();
+    if (componentType != null && containsStruct(componentType)) {
+      return true;
+    }
+    final RelDataType keyType = type.getKeyType();
+    if (keyType != null && containsStruct(keyType)) {
+      return true;
+    }
+    final RelDataType valueType = type.getValueType();
+    return valueType != null && containsStruct(valueType);
   }
 
   private List<Expression> fieldReferences(
