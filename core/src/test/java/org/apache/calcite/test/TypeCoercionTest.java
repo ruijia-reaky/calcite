@@ -353,6 +353,176 @@ class TypeCoercionTest {
         .columnType("BOOLEAN NOT NULL");
   }
 
+  @Test void testComparisonCoercion() {
+    // NULL
+    final Fixture f = fixture();
+    f.comparisonCommonType(f.nullType, f.nullType, f.nullType);
+    // BOOLEAN
+    f.comparisonCommonType(f.nullType, f.booleanType, null);
+    f.comparisonCommonType(f.booleanType, f.booleanType, f.booleanType);
+    f.comparisonCommonType(f.intType, f.booleanType, null);
+    f.comparisonCommonType(f.bigintType, f.booleanType, null);
+    // INT
+    f.comparisonCommonType(f.smallintType, f.intType, f.intType);
+    f.comparisonCommonType(f.smallintType, f.bigintType, f.bigintType);
+    f.comparisonCommonType(f.intType, f.bigintType, f.bigintType);
+    f.comparisonCommonType(f.bigintType, f.bigintType, f.bigintType);
+    // FLOAT/DOUBLE
+    f.comparisonCommonType(f.realType, f.doubleType, f.doubleType);
+    f.comparisonCommonType(f.realType, f.realType, f.realType);
+    f.comparisonCommonType(f.doubleType, f.doubleType, f.doubleType);
+    // EXACT + FRACTIONAL
+    f.comparisonCommonType(f.intType, f.realType, f.realType);
+    f.comparisonCommonType(f.intType, f.doubleType, f.doubleType);
+    f.comparisonCommonType(f.bigintType, f.realType, f.realType);
+    f.comparisonCommonType(f.bigintType, f.doubleType, f.doubleType);
+    // Fixed precision decimal
+    RelDataType decimal54 =
+        f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 5, 4);
+    RelDataType decimal71 =
+        f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 7, 1);
+    RelDataType decimal104 =
+        f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 10, 4);
+    RelDataType decimal144 =
+        f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 14, 4);
+    f.comparisonCommonType(decimal54, decimal71, decimal104);
+    f.comparisonCommonType(decimal54, f.doubleType, f.doubleType);
+    f.comparisonCommonType(decimal54, f.intType, decimal144);
+    // CHAR/VARCHAR
+    f.comparisonCommonType(f.charType, f.varcharType, f.varcharType);
+    f.comparisonCommonType(f.intType, f.charType, f.intType);
+    f.comparisonCommonType(f.doubleType, f.charType, f.doubleType);
+    // Test cases for [CALCITE-7727] Comparing UUID <> '' always returns FALSE.
+    final RelDataType char0Type = f.typeFactory.createSqlType(SqlTypeName.CHAR, 0);
+    final RelDataType char36Type = f.typeFactory.createSqlType(SqlTypeName.CHAR, 36);
+    final RelDataType char40Type = f.typeFactory.createSqlType(SqlTypeName.CHAR, 40);
+    final RelDataType binary16Type =
+        f.typeFactory.createSqlType(SqlTypeName.BINARY, 16);
+    final RelDataType binary20Type =
+        f.typeFactory.createSqlType(SqlTypeName.BINARY, 20);
+    f.comparisonCommonType(f.uuidType, char0Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.charType, f.uuidType);
+    f.comparisonCommonType(f.uuidType, char36Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, char40Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.varchar20Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.varcharType, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.binaryType, f.uuidType);
+    f.comparisonCommonType(f.uuidType, binary16Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, binary20Type, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.varbinaryType, f.uuidType);
+    f.comparisonCommonType(f.uuidType, f.uuidType, f.uuidType);
+
+    // TIMESTAMP
+    f.comparisonCommonType(f.timestampType, f.timestampType, f.timestampType);
+    f.comparisonCommonType(f.dateType, f.timestampType, f.timestampType);
+    f.comparisonCommonType(f.intType, f.timestampType, null);
+    f.comparisonCommonType(f.varcharType, f.timestampType, f.timestampType);
+    // generic
+    f.comparisonCommonType(f.charType, f.mapType(f.intType, f.charType), null);
+    f.comparisonCommonType(f.arrayType(f.intType), f.recordType(ImmutableList.of()),
+        null);
+    f.comparisonCommonType(f.recordType("a", f.intType),
+        f.recordType("a", f.intType), f.recordType("a", f.intType));
+    f.comparisonCommonType(f.recordType("a", f.intType),
+        f.recordType("a", f.charType), f.recordType("a", f.intType));
+    f.comparisonCommonType(f.recordType("a", f.arrayType(f.intType)),
+        f.recordType("a", f.arrayType(f.intType)),
+        f.recordType("a", f.arrayType(f.intType)));
+
+    // Nullable types
+    // BOOLEAN
+    f.comparisonCommonType(f.booleanType, f.nullableBooleanType, f.nullableBooleanType);
+    f.comparisonCommonType(f.nullableBooleanType, f.booleanType, f.nullableBooleanType);
+    f.comparisonCommonType(f.nullableBooleanType, f.nullableBooleanType, f.nullableBooleanType);
+    f.comparisonCommonType(f.nullableIntType, f.booleanType, null);
+    f.comparisonCommonType(f.bigintType, f.nullableBooleanType, null);
+    // INT
+    f.comparisonCommonType(f.nullableSmallintType, f.intType, f.nullableIntType);
+    f.comparisonCommonType(f.smallintType, f.nullableBigintType, f.nullableBigintType);
+    f.comparisonCommonType(f.nullableIntType, f.bigintType, f.nullableBigintType);
+    f.comparisonCommonType(f.bigintType, f.nullableBigintType, f.nullableBigintType);
+    // FLOAT/DOUBLE
+    f.comparisonCommonType(f.realType, f.nullableDoubleType, f.nullableDoubleType);
+    f.comparisonCommonType(f.nullableRealType, f.realType, f.nullableRealType);
+    f.comparisonCommonType(f.doubleType, f.nullableDoubleType, f.nullableDoubleType);
+    // EXACT + FRACTIONAL
+    f.comparisonCommonType(f.intType, f.nullableRealType, f.nullableRealType);
+    f.comparisonCommonType(f.nullableIntType, f.doubleType, f.nullableDoubleType);
+    f.comparisonCommonType(f.bigintType, f.nullableRealType, f.nullableRealType);
+    f.comparisonCommonType(f.nullableBigintType, f.doubleType, f.nullableDoubleType);
+
+    RelDataType nullableDecimal54 =
+        f.typeFactory.createTypeWithNullability(
+            f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 5, 4), true);
+    RelDataType nullableDecimal144 =
+        f.typeFactory.createTypeWithNullability(
+          f.typeFactory.createSqlType(SqlTypeName.DECIMAL, 14, 4), true);
+    f.comparisonCommonType(nullableDecimal54, f.doubleType, f.nullableDoubleType);
+    f.comparisonCommonType(decimal54, f.nullableIntType, nullableDecimal144);
+    // CHAR/VARCHAR
+    f.comparisonCommonType(f.nullableCharType, f.varcharType, f.nullableVarcharType);
+    f.comparisonCommonType(f.intType, f.nullableCharType, f.nullableIntType);
+    f.comparisonCommonType(f.doubleType, f.nullableCharType, f.nullableDoubleType);
+    // TIMESTAMP
+    f.comparisonCommonType(f.timestampType, f.nullableTimestampType, f.nullableTimestampType);
+    f.comparisonCommonType(f.nullableDateType, f.timestampType, f.nullableTimestampType);
+    f.comparisonCommonType(f.nullableIntType, f.timestampType, null);
+    f.comparisonCommonType(f.varcharType, f.nullableTimestampType, f.nullableTimestampType);
+    // generic
+    f.comparisonCommonType(f.charType, f.mapType(f.intType, f.nullableCharType), null);
+    f.comparisonCommonType(f.arrayType(f.nullableIntType), f.recordType(ImmutableList.of()),
+        null);
+    f.comparisonCommonType(f.recordType("a", f.nullableIntType),
+        f.recordType("a", f.intType), f.recordType("a", f.nullableIntType));
+    f.comparisonCommonType(f.recordType("a", f.intType),
+        f.recordType("a", f.nullableCharType), f.recordType("a", f.nullableIntType));
+    f.comparisonCommonType(f.recordType("a", f.arrayType(f.nullableIntType)),
+        f.recordType("a", f.arrayType(f.intType)),
+        f.recordType("a", f.arrayType(f.nullableIntType)));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7847">[CALCITE-7847]
+   * Implicit coercion casts MULTISET operands of a comparison to ARRAY, and
+   * loses the nullability of ROW operands</a>. The comparison common type of
+   * two ROW values is nullable if either of them is nullable. */
+  @Test void testComparisonCommonTypeOfRowIsNullableIfEitherIs() {
+    final Fixture f = fixture();
+    f.comparisonCommonType(f.nullable(f.recordType("a", f.intType)),
+        f.recordType("a", f.charType), f.nullable(f.recordType("a", f.intType)));
+    f.comparisonCommonType(f.nullable(f.recordType("a", f.intType)),
+        f.nullable(f.recordType("a", f.charType)),
+        f.nullable(f.recordType("a", f.intType)));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7847">[CALCITE-7847]
+   * Implicit coercion casts MULTISET operands of a comparison to ARRAY, and
+   * loses the nullability of ROW operands</a>. The comparison common type of
+   * two MULTISET values is a MULTISET, and of two ARRAY values an ARRAY. */
+  @Test void testComparisonCommonTypeOfMultisetIsMultiset() {
+    final Fixture f = fixture();
+    f.comparisonCommonType(f.multisetType(f.intType),
+        f.multisetType(f.charType), f.multisetType(f.intType));
+    f.comparisonCommonType(f.nullable(f.multisetType(f.intType)),
+        f.multisetType(f.charType), f.nullable(f.multisetType(f.intType)));
+    f.comparisonCommonType(f.arrayType(f.intType),
+        f.arrayType(f.charType), f.arrayType(f.intType));
+    f.comparisonCommonType(f.multisetType(f.intType), f.arrayType(f.intType), null);
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6631">[CALCITE-6631]
+   * The common type for a comparison operator returns the wrong type
+   * when comparing a Java type long with a SQL type INTEGER</a>. */
+  @Test void testComparisonCoercionWithJavaType() {
+    final Fixture f = fixture();
+    f.comparisonCommonType(f.intJavaType, f.bigintJavaType, null);
+    f.comparisonCommonType(f.intJavaType, f.bigintType, null);
+  }
+
+
   /** Test case for case when expression and COALESCE operator. */
   @Test void testCaseWhen() {
     // coalesce
@@ -764,6 +934,14 @@ class TypeCoercionTest {
       return typeFactory.createArrayType(type, -1);
     }
 
+    RelDataType multisetType(RelDataType type) {
+      return typeFactory.createMultisetType(type, -1);
+    }
+
+    RelDataType nullable(RelDataType type) {
+      return typeFactory.createTypeWithNullability(type, true);
+    }
+
     RelDataType mapType(RelDataType keyType, RelDataType valType) {
       return typeFactory.createMapType(keyType, valType);
     }
@@ -865,6 +1043,31 @@ class TypeCoercionTest {
             + ", but found " + toStringNullable(result1),
             result1, sameInstance(expected));
       }
+    }
+
+    private void comparisonCommonType(
+        RelDataType type1,
+        RelDataType type2,
+        @Nullable RelDataType expected) {
+      RelDataType result = typeCoercion.commonTypeForBinaryComparison(type1, type2);
+      assertThat("Expected " + fullTypeString(expected)
+              + " as comparison common type for " + fullTypeString(type1)
+              + " and " + fullTypeString(type2)
+              + ", but found " + fullTypeString(result),
+          result,
+          sameInstance(expected));
+      RelDataType result1 = typeCoercion.commonTypeForBinaryComparison(type2, type1);
+      assertThat("Expected " + fullTypeString(expected)
+              + " as common type for " + fullTypeString(type2)
+              + " and " + fullTypeString(type1)
+              + ", but found " + fullTypeString(result1),
+          result1, sameInstance(expected));
+    }
+
+    /** Returns the full type string, which, unlike {@link RelDataType#toString},
+     * includes nullability. */
+    private String fullTypeString(@Nullable RelDataType type) {
+      return type == null ? "NULL" : type.getFullTypeString();
     }
 
     /** Decision method for finding a wider type. */

@@ -559,6 +559,100 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       }
     }
 
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isApproximateNumeric(type2)) {
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      return factory.createTypeWithNullability(type1, anyNullable);
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type2) && SqlTypeUtil.isExactNumeric(type1)) {
+      return factory.createTypeWithNullability(type2, anyNullable);
+    }
+
+    if (SqlTypeUtil.isExactNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      if (SqlTypeUtil.isDecimal(type1) || SqlTypeUtil.isDecimal(type2)) {
+        // Precision used must be large enough to fit either of the types
+        int maxScale = Math.max(type1.getScale(), type2.getScale());
+        RelDataType result =
+            factory.createSqlType(SqlTypeName.DECIMAL,
+                Math.max(type1.getPrecision() - type1.getScale(),
+                         type2.getPrecision() - type2.getScale()) + maxScale,
+                maxScale);
+        return factory.createTypeWithNullability(result, anyNullable);
+      }
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+    }
+
+    if (typeName1 == SqlTypeName.ARRAY || typeName1 == SqlTypeName.MULTISET) {
+      if (typeName2 != typeName1) {
+        return null;
+      }
+      RelDataType elementType1 = type1.getComponentType();
+      RelDataType elementType2 = type2.getComponentType();
+      RelDataType type = commonTypeForBinaryComparison(elementType1, elementType2);
+      if (type == null) {
+        return null;
+      }
+      // The only maxCardinality that seems to be supported is -1, i.e., unlimited.
+      RelDataType resultType = typeName1 == SqlTypeName.ARRAY
+          ? factory.createArrayType(type, -1)
+          : factory.createMultisetType(type, -1);
+      return factory.createTypeWithNullability(resultType, anyNullable);
+    }
+
+    if (typeName1 == SqlTypeName.MAP) {
+      if (typeName2 != SqlTypeName.MAP) {
+        return null;
+      }
+      RelDataType keyType1 = type1.getKeyType();
+      RelDataType keyType2 = type2.getKeyType();
+      RelDataType keyType = commonTypeForBinaryComparison(keyType1, keyType2);
+      if (keyType == null) {
+        return null;
+      }
+      RelDataType valueType1 = type1.getValueType();
+      RelDataType valueType2 = type2.getValueType();
+      RelDataType valueType = commonTypeForBinaryComparison(valueType1, valueType2);
+      if (valueType == null) {
+        return null;
+      }
+      RelDataType resultType = factory.createMapType(keyType, valueType);
+      return factory.createTypeWithNullability(resultType, anyNullable);
+    }
+
+    if (typeName1 == SqlTypeName.ROW) {
+      if (typeName2 != typeName1) {
+        return null;
+      }
+      if (type1.getFieldCount() != type2.getFieldCount()) {
+        return null;
+      }
+      List<RelDataTypeField> leftFields = type1.getFieldList();
+      List<RelDataTypeField> rightFields = type2.getFieldList();
+      List<RelDataTypeField> resultFields = new ArrayList<>();
+      for (int i = 0; i < leftFields.size(); i++) {
+        RelDataTypeField leftField = leftFields.get(i);
+        RelDataType type =
+            commonTypeForBinaryComparison(leftField.getType(), rightFields.get(i).getType());
+        if (type == null) {
+          return null;
+        }
+        resultFields.add(new RelDataTypeFieldImpl(leftField.getName(), i, type));
+      }
+      RelDataType resultType = factory.createStructType(resultFields);
+      return factory.createTypeWithNullability(resultType, anyNullable);
+    }
+
     return null;
   }
 
