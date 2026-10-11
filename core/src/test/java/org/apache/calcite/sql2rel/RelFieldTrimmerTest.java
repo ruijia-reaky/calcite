@@ -543,4 +543,314 @@ class RelFieldTrimmerTest {
         + "        LogicalTableScan(table=[[scott, EMP]])\n";
     assertThat(trimmed, hasTree(expected));
   }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6715">[CALCITE-6715]
+   * Enhance RelFieldTrimmer to trim LogicalCorrelate nodes</a>.
+   */
+  @Test void testLogicalCorrelateFieldTrimmer() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final Holder<@Nullable RexCorrelVariable> v = Holder.empty();
+    RelNode root = builder.scan("EMP")
+        .projectPlus(builder.call(SqlStdOperatorTable.PLUS, builder.field(0), builder.field(0)))
+        .variable(v::set)
+        .values(new String[] {"dummy"}, true)
+        .project(
+            builder.call(SqlStdOperatorTable.ARRAY_VALUE_CONSTRUCTOR,
+            builder.field(v.get(), "DEPTNO"), builder.field(v.get(), "DEPTNO")))
+        .uncollect(Collections.emptyList(), false, true, false)
+        .correlate(JoinRelType.LEFT, v.get().id, builder.field(2, 0, "DEPTNO"))
+        .aggregate(builder.groupKey("ENAME"), builder.max(builder.field("EMPNO")))
+        .build();
+
+    String origTree = ""
+        + "LogicalAggregate(group=[{1}], agg#0=[MAX($0)])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{7}])\n"
+        + "    LogicalProject(EMPNO=[$0], ENAME=[$1], JOB=[$2], MGR=[$3], HIREDATE=[$4], SAL=[$5], COMM=[$6], DEPTNO=[$7], $f8=[+($0, $0)])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    Uncollect\n"
+        + "      LogicalProject($f0=[ARRAY($cor0.DEPTNO, $cor0.DEPTNO)])\n"
+        + "        LogicalValues(tuples=[[{ true }]])\n";
+    assertThat(root, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(root);
+    final String expected = ""
+        + "LogicalAggregate(group=[{1}], agg#0=[MAX($0)])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{2}])\n"
+        + "    LogicalProject(EMPNO=[$0], ENAME=[$1], DEPTNO=[$7])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    Uncollect\n"
+        + "      LogicalProject($f0=[ARRAY($cor0.DEPTNO, $cor0.DEPTNO)])\n"
+        + "        LogicalValues(tuples=[[{ true }]])\n";
+
+    assertThat(trimmed, hasTree(expected));
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6715">[CALCITE-6715]
+   * Enhance RelFieldTrimmer to trim LogicalCorrelate nodes</a>.
+   */
+  @Test void testLogicalCorrelateFieldTrimmer2() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final Holder<@Nullable RexCorrelVariable> v = Holder.empty();
+    RelNode root = builder.scan("EMP")
+        .projectPlus(builder.call(SqlStdOperatorTable.PLUS, builder.field(0), builder.field(0)))
+        .variable(v::set)
+        .scan("DEPT")
+        .projectPlus(
+            builder.call(SqlStdOperatorTable.PLUS,
+            builder.field(v.get(), "DEPTNO"), builder.field(v.get(), "DEPTNO")))
+        .filter(
+            builder.equals(builder.field(0),
+                builder.call(
+                    SqlStdOperatorTable.PLUS,
+                    builder.literal(10),
+                    builder.field(v.get(), "DEPTNO"))))
+        .correlate(JoinRelType.LEFT, v.get().id, builder.field(2, 0, "DEPTNO"))
+        .aggregate(builder.groupKey("ENAME"), builder.max(builder.field("EMPNO")))
+        .build();
+
+    String origTree = ""
+        + "LogicalAggregate(group=[{1}], agg#0=[MAX($0)])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{7}])\n"
+        + "    LogicalProject(EMPNO=[$0], ENAME=[$1], JOB=[$2], MGR=[$3], HIREDATE=[$4], SAL=[$5], COMM=[$6], DEPTNO=[$7], $f8=[+($0, $0)])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    LogicalFilter(condition=[=($0, +(10, $cor0.DEPTNO))])\n"
+        + "      LogicalProject(DEPTNO=[$0], DNAME=[$1], LOC=[$2], $f3=[+($cor0.DEPTNO, $cor0.DEPTNO)])\n"
+        + "        LogicalTableScan(table=[[scott, DEPT]])\n";
+    assertThat(root, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(root);
+    final String expected = ""
+        + "LogicalAggregate(group=[{1}], agg#0=[MAX($0)])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{2}])\n"
+        + "    LogicalProject(EMPNO=[$0], ENAME=[$1], DEPTNO=[$7])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    LogicalFilter(condition=[=($0, +(10, $cor0.DEPTNO))])\n"
+        + "      LogicalProject(DEPTNO=[$0])\n"
+        + "        LogicalTableScan(table=[[scott, DEPT]])\n";
+
+    assertThat(trimmed, hasTree(expected));
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7341">[CALCITE-7341]
+   * RelFieldTrimmer should trim Scalar sub-query</a>.
+   *
+   * <p>The relational expression inside the scalar sub-query must be trimmed
+   * too: the table scan inside the sub-query gets a project that identifies
+   * the columns required by the sub-query, instead of returning all columns.
+   */
+  @Test void testTrimScalarSubquery() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final RelNode root = builder.scan("DEPT")
+        .project(builder.field("DEPTNO"),
+            builder.scalarQuery(
+                b2 -> builder.scan("EMP")
+                    .filter(
+                        builder.call(SqlStdOperatorTable.GREATER_THAN,
+                        builder.field("SAL"), builder.literal(1000)))
+                    .aggregate(builder.groupKey(), builder.countStar("c"))
+                    .build()))
+        .build();
+
+    String origTree = ""
+        + "LogicalProject(DEPTNO=[$0], $f1=[$SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[>($5, 1000)])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n"
+        + "})])\n"
+        + "  LogicalTableScan(table=[[scott, DEPT]])\n";
+    assertThat(root, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(root);
+    final String expected = ""
+        + "LogicalProject(DEPTNO=[$0], $f1=[$SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[>($1, 1000)])\n"
+        + "    LogicalProject(EMPNO=[$0], SAL=[$5])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "})])\n"
+        + "  LogicalTableScan(table=[[scott, DEPT]])\n";
+    assertThat(trimmed, hasTree(expected));
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-3772">[CALCITE-3772]
+   * RelFieldTrimmer incorrectly trims fields when the query includes correlated-subquery</a>.
+   *
+   * <p>Also tests
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7341">[CALCITE-7341]
+   * RelFieldTrimmer should trim Scalar sub-query</a>: the relational expression
+   * inside the scalar sub-query is trimmed as well.
+   */
+  @Test void testTrimCorrelatedSubquery() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final Holder<@Nullable RexCorrelVariable> v = Holder.empty();
+    builder.scan("EMP")
+        .variable(v::set)
+        .filter(
+            builder.call(SqlStdOperatorTable.GREATER_THAN, builder.field(5),
+            builder.literal(10)));
+    final ImmutableList.Builder<RexNode> projectsNode = ImmutableList.builder();
+    projectsNode.add(builder.field(0));
+    projectsNode.add(
+        builder.scalarQuery(
+            b2 -> builder.scan("EMP").filter(
+                builder.call(SqlStdOperatorTable.LESS_THAN,
+                    builder.field(3), builder.field(v.get(), "MGR")))
+                .project(builder.field(0))
+                .aggregate(builder.groupKey(), builder.countStar("c"))
+                .build()));
+    RelNode root =
+        builder.project(projectsNode.build(),
+                ImmutableList.of(), false, ImmutableList.of(v.get().id)).build();
+
+    String origTree = ""
+        + "LogicalProject(variablesSet=[[$cor0]], EMPNO=[$0], $f1=[$SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($3, $cor0.MGR)])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n})])\n"
+        + "  LogicalFilter(condition=[>($5, 10)])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(root, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(root);
+    final String expected = ""
+        + "LogicalProject(variablesSet=[[$cor0]], EMPNO=[$0], $f1=[$SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($1, $cor0.MGR)])\n"
+        + "    LogicalProject(EMPNO=[$0], MGR=[$3])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "})])\n"
+        + "  LogicalFilter(condition=[>($2, 10)])\n"
+        + "    LogicalProject(EMPNO=[$0], MGR=[$3], SAL=[$5])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n";
+
+    assertThat(trimmed, hasTree(expected));
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7336">[CALCITE-7336]
+   * RelFieldTrimmer generates an incorrect plan
+   * when handling correlated sub-query within Filter or Join condition</a>.
+   *
+   * <p>Also tests
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7341">[CALCITE-7341]
+   * RelFieldTrimmer should trim Scalar sub-query</a>.
+   */
+  @Test void testTrimCorrelatedSubqueryInFilterCondition() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final Holder<@Nullable RexCorrelVariable> v = Holder.empty();
+    RelNode original = builder.scan("EMP")
+        .variable(v::set)
+        .filter(ImmutableList.of(v.get().id),
+            builder.call(SqlStdOperatorTable.GREATER_THAN, builder.field(5),
+                builder.scalarQuery(
+                    b2 -> builder.scan("EMP").filter(
+                            builder.call(SqlStdOperatorTable.LESS_THAN,
+                                builder.field(3), builder.field(v.get(), "MGR")))
+                        .project(builder.field(0))
+                        .aggregate(builder.groupKey(), builder.countStar("c"))
+                        .build())))
+        .project(builder.field(0))
+        .build();
+
+    String origTree = ""
+        + "LogicalProject(EMPNO=[$0])\n"
+        + "  LogicalFilter(condition=[>($5, $SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($3, $cor0.MGR)])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n"
+        + "}))], variablesSet=[[$cor0]])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(original, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(original);
+    final String expected = ""
+        + "LogicalProject(EMPNO=[$0])\n"
+        + "  LogicalFilter(condition=[>($2, $SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($1, $cor0.MGR)])\n"
+        + "    LogicalProject(EMPNO=[$0], MGR=[$3])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "}))], variablesSet=[[$cor0]])\n"
+        + "    LogicalProject(EMPNO=[$0], MGR=[$3], SAL=[$5])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(trimmed, hasTree(expected));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7336">[CALCITE-7336]
+   * RelFieldTrimmer generates an incorrect plan
+   * when handling correlated sub-query within Filter or Join condition</a>.
+   *
+   * <p>Also tests
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7341">[CALCITE-7341]
+   * RelFieldTrimmer should trim Scalar sub-query</a>.
+   */
+  @Test void testTrimCorrelatedSubqueryInJoinCondition() {
+    final RelBuilder builder = RelBuilder.create(config().build());
+    final Holder<@Nullable RexCorrelVariable> v = Holder.empty();
+    final RelNode original =
+        builder.scan("EMP")
+            .variable(v::set)
+            .scan("DEPT")
+            .join(JoinRelType.INNER,
+                builder.and(
+                    builder.equals(
+                        builder.field(2, 0, "DEPTNO"),
+                        builder.field(2, 1, "DEPTNO")),
+                    builder.call(SqlStdOperatorTable.GREATER_THAN, builder.field(1),
+                        builder.scalarQuery(
+                            b2 -> builder.scan("EMP").filter(
+                                    builder.call(SqlStdOperatorTable.LESS_THAN,
+                                        builder.field(3), builder.field(v.get(), "MGR")))
+                                .project(builder.field(0))
+                                .aggregate(builder.groupKey(), builder.countStar("c"))
+                                .build()))), ImmutableSet.of(v.get().id))
+            .project(
+                builder.field("ENAME"),
+                builder.field("DNAME"))
+            .build();
+
+    String origTree = ""
+        + "LogicalProject(ENAME=[$1], DNAME=[$9])\n"
+        + "  LogicalJoin(condition=[AND(=($7, $8), >($1, $SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($3, $cor0.MGR)])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n"
+        + "})))], joinType=[inner], variablesSet=[[$cor0]])\n"
+        + "    LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    LogicalTableScan(table=[[scott, DEPT]])\n";
+    assertThat(original, hasTree(origTree));
+
+    final RelFieldTrimmer fieldTrimmer = new RelFieldTrimmer(null, builder);
+    final RelNode trimmed = fieldTrimmer.trim(original);
+
+    final String expected = ""
+        + "LogicalProject(ENAME=[$1], DNAME=[$5])\n"
+        + "  LogicalJoin(condition=[AND(=($3, $4), >($1, $SCALAR_QUERY({\n"
+        + "LogicalAggregate(group=[{}], c=[COUNT()])\n"
+        + "  LogicalFilter(condition=[<($1, $cor0.MGR)])\n"
+        + "    LogicalProject(EMPNO=[$0], MGR=[$3])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "})))], joinType=[inner], variablesSet=[[$cor0]])\n"
+        + "    LogicalProject(EMPNO=[$0], ENAME=[$1], MGR=[$3], DEPTNO=[$7])\n"
+        + "      LogicalTableScan(table=[[scott, EMP]])\n"
+        + "    LogicalProject(DEPTNO=[$0], DNAME=[$1])\n"
+        + "      LogicalTableScan(table=[[scott, DEPT]])\n";
+    assertThat(trimmed, hasTree(expected));
+  }
+
 }
