@@ -384,6 +384,199 @@ public enum Primitive {
     }
   }
 
+  /** Called from BuiltInMethod.INTEGER_CAST */
+  public static @Nullable Object integerCast(Primitive primitive, final Object value) {
+    return requireNonNull(primitive, "primitive").numberValue((Number) value, RoundingMode.DOWN);
+  }
+
+  /** Called from BuiltInMethod.INTEGER_CAST_ROUNDING_MODE */
+  public static @Nullable Object integerCast(Primitive primitive, final Object value,
+      RoundingMode roundingMode) {
+    return requireNonNull(primitive, "primitive").numberValue((Number) value, roundingMode);
+  }
+
+  static BigDecimal checkOverflow(BigDecimal value, int precision, int scale,
+      RoundingMode roundingMode) {
+    BigDecimal result = value.setScale(scale, roundingMode);
+    result = result.stripTrailingZeros();
+    if (result.scale() < scale) {
+      // stripTrailingZeros also removes zeros if there is no
+      // decimal point, converting 1000 to 1e+3, using a negative scale.
+      // Here we undo this change.
+      result = result.setScale(scale, roundingMode);
+    }
+    int actualPrecision = result.precision();
+    if (actualPrecision > precision) {
+      throw new ArithmeticException("Value " + value
+          + " cannot be represented as a DECIMAL(" + precision + ", " + scale + ")");
+    }
+    if (scale < 0) {
+      // The result maybe scientific notation string,e.g. 1.234E+6,
+      // we need to convert it to 1234000
+      if (!isBoundedDecimal(result)) {
+        throw new IllegalArgumentException(
+            "DECIMAL literal exceeds the configured plain-notation bound: " + result);
+      }
+      return new BigDecimal(result.toPlainString());
+    }
+    return result;
+  }
+
+  private static boolean isBoundedDecimal(BigDecimal value) {
+    // Mirrors org.apache.calcite.sql.SqlUtil.isBoundedDecimal without
+    // introducing a core -> linq4j dependency (linq4j cannot depend on core).
+    // Bound is calcite.parser.maxDecimalLiteralPlainDigits (default 10000).
+    int limit = Integer.getInteger("calcite.parser.maxDecimalLiteralPlainDigits", 10_000);
+    return (long) value.precision() + Math.abs((long) value.scale()) <= limit;
+  }
+
+  /** Called from BuiltInMethod.CHAR_DECIMAL_CAST */
+  public static @Nullable Object charToDecimalCast(
+      @Nullable String value, int precision, int scale) {
+    return charToDecimalCast(value, precision, scale, RoundingMode.DOWN);
+  }
+
+  /** Called from BuiltInMethod.CHAR_DECIMAL_CAST_ROUNDING_MODE */
+  public static @Nullable Object charToDecimalCast(
+      @Nullable String value, int precision, int scale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    BigDecimal result = new BigDecimal(checkNumericString(value.trim()));
+    return checkOverflow(result, precision, scale, roundingMode);
+  }
+
+  /** Returns a string unchanged if each of its characters can occur in a SQL
+   * numeric literal, otherwise throws.
+   *
+   * <p>This function is more strict than e.g., Double.parseDouble
+   *  which accepts "1.5d" and "0x1p3". */
+  public static String checkNumericString(String s) {
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if ((c < '0' || c > '9')
+          && c != '+' && c != '-' && c != '.' && c != 'e' && c != 'E') {
+        throw new NumberFormatException("For input string: \"" + s + "\"");
+      }
+    }
+    return s;
+  }
+
+  /** An extension of {@link Primitive#checkNumericString} which also
+   * accepts special floating-point values. */
+  public static String checkApproxNumericString(String s) {
+    switch (s) {
+    case "NaN":
+    case "Infinity":
+    case "+Infinity":
+    case "-Infinity":
+      return s;
+    default:
+      return checkNumericString(s);
+    }
+  }
+
+  /**
+   * Convert a short time interval to a decimal value.
+   * Called from BuiltInMethod.SHORT_INTERVAL_DECIMAL_CAST.
+   * @param unitScale Scale describing source interval type */
+  public static @Nullable Object shortIntervalToDecimalCast(
+      @Nullable Long value, int precision, int scale,
+      BigDecimal unitScale) {
+    return shortIntervalToDecimalCast(value, precision, scale, unitScale, RoundingMode.DOWN);
+  }
+
+  /**
+   * Convert a short time interval to a decimal value.
+   * Called from BuiltInMethod.SHORT_INTERVAL_DECIMAL_CAST_ROUNDING_MODE.
+   * @param unitScale Scale describing source interval type */
+  public static @Nullable Object shortIntervalToDecimalCast(
+      @Nullable Long value, int precision, int scale,
+      BigDecimal unitScale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    // Divide with the scale expected of the result
+    BigDecimal result = new BigDecimal(value).divide(unitScale, scale, roundingMode);
+    return checkOverflow(result, precision, scale, roundingMode);
+  }
+
+  /**
+   * Convert a long time interval to a decimal value.
+   * Called from BuiltInMethod.LONG_INTERVAL_DECIMAL_CAST.
+   * @param unitScale Scale describing source interval type */
+  public static @Nullable Object longIntervalToDecimalCast(
+      @Nullable Integer value, int precision, int scale,
+      BigDecimal unitScale) {
+    return longIntervalToDecimalCast(value, precision, scale, unitScale, RoundingMode.DOWN);
+  }
+
+  /**
+   * Convert a long time interval to a decimal value.
+   * Called from BuiltInMethod.LONG_INTERVAL_DECIMAL_CAST_ROUNDING_MODE.
+   * @param unitScale Scale describing source interval type */
+  public static @Nullable Object longIntervalToDecimalCast(
+      @Nullable Integer value, int precision, int scale,
+      BigDecimal unitScale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    // Divide with the scale expected of the result
+    BigDecimal result = new BigDecimal(value).divide(unitScale, scale, roundingMode);
+    return checkOverflow(result, precision, scale, roundingMode);
+  }
+
+  /** Called from BuiltInMethod.DECIMAL_DECIMAL_CAST */
+  public static @Nullable Object decimalDecimalCast(
+      @Nullable BigDecimal value, int precision, int scale) {
+    return decimalDecimalCast(value, precision, scale, RoundingMode.DOWN);
+  }
+
+  /** Called from BuiltInMethod.DECIMAL_DECIMAL_CAST_ROUNDING_MODE */
+  public static @Nullable Object decimalDecimalCast(
+      @Nullable BigDecimal value, int precision, int scale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    return checkOverflow(value, precision, scale, roundingMode);
+  }
+
+  /** Called from BuiltInMethod.INTEGER_DECIMAL_CAST */
+  public static @Nullable Object integerDecimalCast(
+      @Nullable Number value, int precision, int scale) {
+    return integerDecimalCast(value, precision, scale, RoundingMode.DOWN);
+  }
+
+  /** Called from BuiltInMethod.INTEGER_DECIMAL_CAST_ROUNDING_MODE */
+  public static @Nullable Object integerDecimalCast(
+      @Nullable Number value, int precision, int scale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    final BigDecimal decimal = new BigDecimal(value.longValue());
+    return checkOverflow(decimal, precision, scale, roundingMode);
+  }
+
+  /** Called from BuiltInMethod.FP_DECIMAL_CAST */
+  public static @Nullable Object fpDecimalCast(
+      @Nullable Number value, int precision, int scale) {
+    return fpDecimalCast(value, precision, scale, RoundingMode.DOWN);
+  }
+
+  /** Called from BuiltInMethod.FP_DECIMAL_CAST_ROUNDING_MODE */
+  public static @Nullable Object fpDecimalCast(
+      @Nullable Number value, int precision, int scale, RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    final BigDecimal decimal = BigDecimal.valueOf(value.doubleValue());
+    return checkOverflow(decimal, precision, scale, roundingMode);
+  }
+
+  public @Nullable Object numberValueRoundDown(Number value) {
+    return numberValue(value, RoundingMode.DOWN);
+  }
+
   /**
    * Converts a number into a value of the type specified by this primitive
    * using the SQL CAST rules.  If the value conversion causes loss of significant digits,
