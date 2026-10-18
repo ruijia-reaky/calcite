@@ -1440,6 +1440,91 @@ public class SqlOperatorTest {
     }
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7865">[CALCITE-7865]
+   * CASTS from string trim in inconsistent ways</a>. */
+  @ParameterizedTest
+  @MethodSource("safeParameters")
+  void testCastFromStringTrim(CastType castType, SqlOperatorFixture f) {
+    f.setFor(SqlStdOperatorTable.CAST, VmName.EXPAND);
+    // Target type, and a valid string for that type
+    final String[][] casts = {
+        {"TINYINT", "1"},
+        {"SMALLINT", "1"},
+        {"INTEGER", "1"},
+        {"BIGINT", "1"},
+        {"TINYINT UNSIGNED", "1"},
+        {"SMALLINT UNSIGNED", "1"},
+        {"INTEGER UNSIGNED", "1"},
+        {"BIGINT UNSIGNED", "1"},
+        {"REAL", "1.5"},
+        {"DOUBLE", "1.5"},
+        {"DECIMAL(5, 2)", "1.5"},
+        {"BOOLEAN", "true"},
+        {"DATE", "2020-01-02"},
+        {"TIME", "10:11:12"},
+        {"TIMESTAMP", "2020-01-02 10:11:12"},
+        {"TIME WITH LOCAL TIME ZONE", "10:11:12 UTC"},
+        {"TIMESTAMP WITH LOCAL TIME ZONE", "2020-01-02 10:11:12 UTC"},
+        {"INTERVAL DAY", "3"},
+    };
+    for (String[] cast : casts) {
+      final String type = cast[0];
+      final String value = cast[1];
+      // Each cast removes leading and trailing characters up to U+0020,
+      // as String.trim does
+      for (String c : new String[] {"\\0009", "\\000A", "\\001F", "\\0020"}) {
+        f.checkBoolean("cast(U&'" + c + value + c + "' as " + type + ")"
+            + " = cast('" + value + "' as " + type + ")", true);
+      }
+      if (castType != CastType.CAST) {
+        // No cast removes U+00A0 (no-break space), which is above U+0020
+        f.checkNull("cast(U&'\\00A0" + value + "' as " + type + ")");
+      }
+    }
+  }
+
+  @Test void testCastToDecimal() {
+    final SqlOperatorFixture f = fixture();
+    // test the minimum scale is 0
+    f.setFor(SqlStdOperatorTable.CAST, VmName.EXPAND);
+    // cast integer to decimal
+    f.checkFails("cast(123 as decimal(3, -1))",
+        "DECIMAL scale -1 must be between 0 and 19", false);
+    // cast float to decimal
+    f.checkFails("cast(12.3 as decimal(3, -1))",
+        "DECIMAL scale -1 must be between 0 and 19", false);
+    // cast decimal to decimal
+    f.checkFails("cast(cast(12.3 as decimal(3, 1)) as decimal(3, -1))",
+        "DECIMAL scale -1 must be between 0 and 19", false);
+    // cast string to decimal
+    f.checkFails("cast('12.3' as decimal(3, -1))",
+        "DECIMAL scale -1 must be between 0 and 19", false);
+    // cast interval to decimal
+    f.checkFails("cast(INTERVAL '5' hour as decimal(3, -1))",
+        "DECIMAL scale -1 must be between 0 and 19", false);
+    // test the minimum scale is -2
+    final SqlOperatorFixture negativeScaleFixture = fixture()
+        .withFactory(tf ->
+            tf.withTypeSystem(typeSystem ->
+                CustomTypeSystems.withMinScale(typeSystem, typeName -> -2)));
+    // cast integer to decimal
+    negativeScaleFixture.checkScalar("cast(123 as decimal(3, -1))",
+        "120", "DECIMAL(3, -1) NOT NULL");
+    // cast float to decimal
+    negativeScaleFixture.checkScalar("cast(12.3 as decimal(3, -1))",
+        "10", "DECIMAL(3, -1) NOT NULL");
+    // cast decimal to decimal
+    negativeScaleFixture.checkScalar("cast(cast(12.3 as decimal(3, 1)) as decimal(3, -1))",
+        "10", "DECIMAL(3, -1) NOT NULL");
+    // cast string to decimal
+    negativeScaleFixture.checkScalar("cast('12.3' as decimal(3, -1))",
+        "10", "DECIMAL(3, -1) NOT NULL");
+    // cast interval to decimal
+    negativeScaleFixture.checkScalar("cast(INTERVAL '5' hour as decimal(3, -1))",
+        "0", "DECIMAL(3, -1) NOT NULL");
+  }
+
   @Test void testCastRowType() {
     final SqlOperatorFixture f = fixture();
     f.checkScalar("cast((1, 2) as row(f0 integer, f1 bigint))",

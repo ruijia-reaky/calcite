@@ -3494,7 +3494,7 @@ public class SqlFunctions {
 
   /** CAST(VARCHAR AS BOOLEAN). */
   public static boolean toBoolean(String s) {
-    s = trim(true, true, " ", s);
+    s = s.trim();
     if (s.equalsIgnoreCase("TRUE")) {
       return true;
     } else if (s.equalsIgnoreCase("FALSE")) {
@@ -3515,12 +3515,14 @@ public class SqlFunctions {
         : (Boolean) cannotConvert(o, boolean.class);
   }
 
-  // Don't need parseByte etc. - Byte.parseByte is sufficient.
+  public static byte toByte(String s) {
+    return parseByte(s.trim());
+  }
 
   public static byte toByte(Object o) {
     return o instanceof Byte ? (Byte) o
         : o instanceof Number ? toByte((Number) o)
-        : Byte.parseByte(o.toString());
+        : toByte(o.toString());
   }
 
   public static byte toByte(Number number) {
@@ -3878,11 +3880,17 @@ public class SqlFunctions {
     return v == null ? castNonNull(null) : internalToTime(v.intValue());
   }
 
+  /** CAST(VARCHAR AS DATE). */
+  public static int stringToDate(String s) {
+    // Trim here, because Avatica rejects some characters below U+0020
+    return DateTimeUtils.dateStringToUnixDate(s.trim());
+  }
+
   public static @PolyNull Integer toTimeWithLocalTimeZone(@PolyNull String v) {
     if (v == null) {
       return castNonNull(null);
     }
-    return new TimeWithTimeZoneString(v)
+    return new TimeWithTimeZoneString(v.trim())
         .withTimeZone(DateTimeUtils.UTC_ZONE)
         .getLocalTimeString()
         .getMillisOfDay();
@@ -4432,7 +4440,7 @@ public class SqlFunctions {
     if (v == null) {
       return castNonNull(null);
     }
-    return new TimestampWithTimeZoneString(v)
+    return new TimestampWithTimeZoneString(v.trim())
         .withTimeZone(DateTimeUtils.UTC_ZONE)
         .getLocalTimestampString()
         .getMillisSinceEpoch();
